@@ -26,6 +26,7 @@ interface PendingAuth {
     state: string;
     code: string;
     createdAt: number;
+    approved: boolean;
 }
 
 interface TokenRecord {
@@ -248,6 +249,7 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
             state,
             code,
             createdAt: Date.now(),
+            approved: false,
         });
 
         console.log(`Auth: /oauth/authorize accepted client_id=${clientId} redirect_uri=${JSON.stringify(redirectUri)}`);
@@ -313,6 +315,10 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
         lockoutCount = 0;
         lockedUntil = 0;
         csrfTokens.delete(code);
+        // Mark the code redeemable only now that the password has been verified.
+        // Without this, /oauth/token would accept the code straight out of the
+        // authorize page before any password was entered.
+        pending.approved = true;
         console.log("Auth: password accepted, issuing authorization code.");
 
         const url = new URL(pending.redirectUri);
@@ -344,6 +350,15 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
                 );
                 if (pending) pendingAuths.delete(code);
                 return c.json({ error: "invalid_grant" }, 400);
+            }
+
+            // The code is only redeemable once the password step succeeded.
+            // It exists in pendingAuths from /oauth/authorize onward (and is
+            // present in the authorize page HTML), so without this check the
+            // password gate can be bypassed entirely.
+            if (!pending.approved) {
+                console.warn("Auth: /oauth/token invalid_grant. code not yet approved (password step not completed)");
+                return c.json({ error: "invalid_grant", error_description: "authorization not approved" }, 400);
             }
 
             // Verify client_id matches the original request

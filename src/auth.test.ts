@@ -408,6 +408,33 @@ describe("Token Exchange", () => {
         assert.equal(resp2.status, 400);
     });
 
+    it("rejects the authorize-page code when the password step was skipped (GHSA-cc9w-6w4g-hqv7)", async () => {
+        const { app } = setup();
+        const pkce = generatePKCE();
+        const client = await registerClient(app);
+        // Read the code straight out of the authorize page, as an attacker would,
+        // without ever POSTing to /oauth/approve.
+        const { fields } = await getAuthorizePage(app, client.client_id, pkce.challenge);
+
+        const tokenResp = await app.request("/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                grant_type: "authorization_code",
+                code: fields.code,
+                client_id: client.client_id,
+                code_verifier: pkce.verifier,
+                redirect_uri: "https://app.example.com/callback",
+            }).toString(),
+        });
+        assert.equal(tokenResp.status, 400);
+        const body = (await tokenResp.json()) as any;
+        assert.equal(body.error, "invalid_grant");
+
+        // And no usable token was minted.
+        assert.equal(body.access_token, undefined);
+    });
+
     it("rejects unsupported grant_type", async () => {
         const { app } = setup();
         const resp = await app.request("/oauth/token", {
