@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.1
+
+### Security
+- **Fixed a critical authentication bypass in password-gated OAuth (GHSA-cc9w-6w4g-hqv7).** `/oauth/token` issued an access token for any authorization code that was in flight, without checking that the password step had completed. Because the code is created and shown on the authorize page before any password is entered, anyone who could reach a server started with `MCP_AUTH_TOKEN` could read the code and redeem it directly, gaining full vault access without the password. The code is now redeemable only after the password is accepted. **If you run with `MCP_AUTH_TOKEN` set, upgrade immediately and rotate the token.** Reported by @sall.
+
+### Features
+- `read_note` declares `anthropic/maxResultSizeChars` so Claude Code returns a whole large note inline instead of a file pointer (#23). Contributed by @andreasd083.
+
+### Fixes
+- Frontmatter keys and inline `#tags` now accept Unicode letters, so non-ASCII tags (e.g. `#lägen`, `#日本語`) and keys are kept whole instead of being truncated or silently dropped (#22). Contributed by @andreasd083.
+- Inline tag parsing now follows Obsidian's own rules: `#tags` inside inline code spans and fenced code blocks are ignored, and all-numeric tags (e.g. `#1984`) are dropped (#24). Contributed by @andreasd083.
+- `delete_note` on a path that does not exist now returns `Note not found` instead of falsely reporting `Deleted` (#26). Contributed by @andreasd083.
+- `npm audit fix` to clear high-severity transitive advisories (axios, undici, brace-expansion); mcp-proxy stays pinned at 6.4.4.
+
 ## 0.7.0
 
 ### Features
