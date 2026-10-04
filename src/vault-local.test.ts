@@ -318,3 +318,20 @@ describe("file watcher integration", () => {
         }
     });
 });
+
+describe("atomic writes", () => {
+    it("leaves no temp files behind and overwrites in place", async () => {
+        await vault.writeNote("atomic/a.md", "first");
+        await vault.writeNote("atomic/a.md", "second");
+        assert.equal(await readFile(join(tmpDir, "atomic/a.md"), "utf-8"), "second");
+        const { readdir } = await import("fs/promises");
+        assert.deepEqual(await readdir(join(tmpDir, "atomic")), ["a.md"]);
+    });
+
+    it("cleans up the temp file when the rename fails", async () => {
+        await mkdir(join(tmpDir, "atomic/dir.md"), { recursive: true });
+        assert.equal(await vault.writeNote("atomic/dir.md", "x"), false);
+        const { readdir } = await import("fs/promises");
+        assert.deepEqual((await readdir(join(tmpDir, "atomic"))).filter((f) => f.startsWith(".~mcp-")), []);
+    });
+});

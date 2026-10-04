@@ -209,6 +209,10 @@ Set `BASE_URL` to the tunnel URL when using authentication.
 | `delete_note` | Delete a note |
 | `move_note` | Move or rename a note — works across folders, creates destination folders automatically |
 | `get_note_metadata` | Get frontmatter, tags, outgoing links, backlinks, size, and timestamps — navigate the knowledge graph |
+| `search_notes` | Full-text search across note contents, with matching lines and line numbers. Regex, case, folder and tag options |
+| `list_conflicts` | List Syncthing conflict copies (`*.sync-conflict-*`) with their original note and content hashes (filesystem mode, `CONFLICT_TOOLS=true`) |
+| `diff_conflict` | Line diff of a conflict copy against its original, hunks labelled by kind (`CONFLICT_TOOLS=true`) |
+| `resolve_conflict` | Merge, keep either side, or escalate one conflict; refuses if a file changed since it was read, logs every action (`CONFLICT_TOOLS=true`, not in `READ_ONLY`) |
 
 Every tool response includes an [Obsidian deep link](https://help.obsidian.md/Extending+Obsidian/Obsidian+URI) (`obsidian://open?vault=...&file=...`) that works on Mac and iOS.
 
@@ -261,9 +265,46 @@ Without `MCP_AUTH_TOKEN`, the server runs without authentication — suitable fo
 | `READ_ONLY` | Optional | `false` | Set to `true` to disable all write tools (`write_note`, `edit_note`, `delete_note`, `move_note`). Only read tools are exposed via MCP, and the vault backend rejects writes as well. Useful when sharing the server with multiple AI clients and write access should be opt-in. This protects the vault from MCP clients; it is not a database-level guarantee. To make CouchDB itself refuse writes, use CouchDB-side controls, such as a `validate_doc_update` function that rejects the server's CouchDB user. |
 | `WRITE_FOLDERS` | Optional | — | Comma-separated list of vault-relative folders where writes are allowed (e.g. `MCP,Inbox`). When set, the whole vault stays readable but `write_note`, `edit_note`, `delete_note`, and `move_note` refuse paths outside these folders (`move_note` requires both source and destination to be writable). Enforced server-side, unlike `MCP_INSTRUCTIONS`. Matching is case-sensitive and folder-boundary-aware (`MCP` matches `MCP/note.md` but not `MCP-private/note.md`). Ignored when `READ_ONLY=true`; unset means the whole vault is writable. |
 | `MCP_INSTRUCTIONS` | Optional | — | Extra text appended to the server's MCP `instructions` (the string clients inject into the system prompt). Use this to bake vault-specific conventions into the server — e.g. folder structure, naming rules, folders to avoid — so they apply across every MCP client without per-client config. Best-effort: not all clients respect `instructions`. |
+| `PRIVATE_PROPERTY` | Optional | `private` | Frontmatter property that hides a note from every tool (`private: true`, also `yes`/`on`). Set to an empty string to disable. See [Private notes](#private-notes). |
+| `BACKUP_DIR` | Optional | `<VAULT_PATH>/.mcp-backups` (filesystem), `<DATA_DIR>/backups` (CouchDB) | Where the previous version of a note is copied before every write, delete or move |
+| `BACKUP_DAYS` | Optional | `30` | Days to keep backups. `0` disables backups |
+| `CONFLICT_TOOLS` | Optional | `false` | Set to `true` to enable `list_conflicts`, `diff_conflict` and `resolve_conflict` (filesystem mode only) |
+| `CONFLICT_LOG_NOTE` | Optional | `_system/Sync conflict log.md` | Note that `resolve_conflict` appends every action to |
+| `CONFLICT_REVIEW_NOTE` | Optional | `_system/Sync conflicts to review.md` | Note that escalated conflicts are listed in |
 | `MCP_INSTRUCTIONS_FILE` | Optional | — | Path to a file (e.g. markdown) whose contents are appended to the MCP `instructions`. Easier than `MCP_INSTRUCTIONS` for multi-line conventions. If both are set, the file wins and `MCP_INSTRUCTIONS` is ignored (with a startup warning). Missing/unreadable file or files larger than 32 KB are fatal startup errors. **Store this file somewhere only the service user can write (e.g. `chmod 600`)** — its contents land in every MCP session's system prompt, so write access to it = prompt-injection access to every client. |
 
 Set `VAULT_PATH` for filesystem mode or `COUCHDB_URL` for CouchDB mode.
+
+---
+
+## Private notes
+
+A note whose frontmatter contains `private: true` is invisible to the server:
+
+- `read_note`, `get_note_metadata`, `edit_note` and `delete_note` answer `Note not found`.
+- `write_note` and `move_note` refuse to overwrite a private note or move onto one.
+- `list_notes`, `list_folders`, `list_tags`, `search_notes` and backlinks leave it out, and the conflict tools skip conflicts that involve it (only a count is reported).
+- It is never indexed or backed up.
+
+The check reads the note when a tool is called, so a note is hidden as soon as it is marked private. This only hides notes from AI clients of this server; your sync tools and devices still have them. Non-Markdown files have no frontmatter and cannot be marked private.
+
+## Backups
+
+Before every write, delete or move, the note's previous content is copied to `BACKUP_DIR/<YYYY-MM-DD>/<path>.<HHMMSS-mmm>`. Day folders older than `BACKUP_DAYS` are pruned at startup and daily. In filesystem mode the default folder is `.mcp-backups` inside the vault: dot folders are never listed, but add it to your sync tool's ignore list (e.g. `.stignore`) if it should stay on the server.
+
+Writes in filesystem mode are atomic: content goes to a `.~mcp-*` temp file next to the note, then is renamed into place, so a sync tool never picks up a half-written note. Add `.~mcp-*` to `.stignore` too.
+
+## Sync conflicts (Syncthing)
+
+With `CONFLICT_TOOLS=true`, an agent can clean up Syncthing conflict copies, for example from a scheduled routine:
+
+1. `list_conflicts` lists every `*.sync-conflict-*` file with its original and content hashes.
+2. `diff_conflict` shows a line diff; hunks are `only_in_conflict`, `only_in_original` or `differs` (both sides changed the same lines).
+3. `resolve_conflict` with `merge`, `keep_original` or `keep_conflict` writes the original first and deletes the copy only after that succeeded, or with `escalate` adds the conflict to `CONFLICT_REVIEW_NOTE` once and changes nothing. It refuses when either file changed since the hashes were read. Every action is appended to `CONFLICT_LOG_NOTE`, and overwritten or deleted files are backed up.
+
+## Building the image from source
+
+`Dockerfile` packages a `dist/` built beforehand (used by CI). Platforms that build straight from Git (Dokploy, Coolify) should use `Dockerfile.source`, which builds inside Docker and fetches the `lib/livesync-commonlib` submodule itself if the checkout lacks it. Both images run as the `node` user (UID/GID 1000) with `DATA_DIR=/data`.
 
 ---
 

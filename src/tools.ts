@@ -5,6 +5,7 @@ import type { VaultBackend } from "./vault-backend.js";
 import type { SearchIndex } from "./search.js";
 import { isPathWritable } from "./write-scope.js";
 import { describeListing, describeNoMatch } from "./list-format.js";
+import { isConflictPath } from "./conflicts.js";
 
 const debugLogging = process.env.LOG_LEVEL === "debug";
 
@@ -175,6 +176,68 @@ export function registerTools(
                 return `- ${date} [${n.path}](${deepLink})`;
             });
             return [header, ...lines].join("\n");
+        },
+    });
+
+    server.addTool({
+        name: "search_notes",
+        description:
+            "Full-text search across note contents (not only names). Returns matching notes with the matching lines and line numbers. Use list_notes(name=...) to search by file name instead. Sync conflict copies are skipped unless include_conflicts is true.",
+        parameters: z.object({
+            query: z.string().min(1).max(500).describe("Text to find. Case-insensitive unless case_sensitive is true. Treated as plain text unless regex is true."),
+            regex: z.boolean().optional().describe("Interpret query as a JavaScript regular expression. Default false."),
+            case_sensitive: z.boolean().optional().describe("Match case exactly. Default false."),
+            folder: z.string().optional().describe("Only search inside this folder, e.g. 'projects'."),
+            tag: z.string().optional().describe("Only search notes with this tag."),
+            include_conflicts: z.boolean().optional().describe("Also search Syncthing conflict copies (*.sync-conflict-*). Default false."),
+            limit: z.coerce.number().optional().describe("Max number of notes to return. Default 20."),
+            max_matches_per_note: z.coerce.number().optional().describe("Max matching lines shown per note. Default 5."),
+        }),
+        execute: async ({ query, regex, case_sensitive, folder, tag, include_conflicts, limit, max_matches_per_note }) => {
+            let pattern: RegExp;
+            try {
+                const source = regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                pattern = new RegExp(source, case_sensitive ? "" : "i");
+            } catch (e: any) {
+                return `Invalid regular expression: ${e.message}`;
+            }
+            let paths = searchIndex.listPaths(folder);
+            if (paths.length === 0) paths = (await vault.listNotesWithMtime(folder)).map((n) => n.path);
+            if (!include_conflicts) paths = paths.filter((p) => !isConflictPath(p));
+            if (tag) paths = paths.filter((p) => searchIndex.getTags(p).includes(tag));
+            const cap = limit ?? 20;
+            const perNote = max_matches_per_note ?? 5;
+            const hits: Array<{ path: string; count: number; lines: string[] }> = [];
+            let matchedNotes = 0;
+            for (const path of paths) {
+                const content = await vault.readNote(path);
+                if (content === null) continue;
+                const lines = content.split(/\r?\n/);
+                const matching: string[] = [];
+                let count = 0;
+                for (let i = 0; i < lines.length; i++) {
+                    if (!pattern.test(lines[i])) continue;
+                    count++;
+                    if (matching.length < perNote) {
+                        const line = lines[i].length > 300 ? lines[i].slice(0, 300) + "…" : lines[i];
+                        matching.push(`  ${i + 1}: ${line}`);
+                    }
+                }
+                if (count === 0) continue;
+                matchedNotes++;
+                if (hits.length < cap) hits.push({ path, count, lines: matching });
+            }
+            const scope = [folder ? `folder="${folder}"` : null, tag ? `tag="${tag}"` : null].filter(Boolean).join(", ");
+            if (matchedNotes === 0) {
+                return `No notes contain ${regex ? "/" + query + "/" : `"${query}"`}${scope ? ` (${scope})` : ""}. Searched ${paths.length} notes.`;
+            }
+            const header = `Found ${matchedNotes} note(s) matching ${regex ? "/" + query + "/" : `"${query}"`}${scope ? ` (${scope})` : ""}, searched ${paths.length} notes${matchedNotes > hits.length ? `; showing first ${hits.length}, raise limit for more` : ""}.`;
+            const body = hits.map((h) => {
+                const deepLink = makeDeepLink(vaultName, h.path);
+                const more = h.count > h.lines.length ? `\n  (+${h.count - h.lines.length} more matching lines)` : "";
+                return `- [${h.path}](${deepLink}) (${h.count} matching line${h.count === 1 ? "" : "s"})\n${h.lines.join("\n")}${more}`;
+            });
+            return [header, ...body].join("\n");
         },
     });
 

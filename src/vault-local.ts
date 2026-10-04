@@ -1,5 +1,6 @@
 import { readFile, writeFile, unlink, mkdir, stat, realpath, rename } from "fs/promises";
-import { dirname, resolve, sep } from "path";
+import { basename, dirname, join, resolve, sep } from "path";
+import { randomBytes } from "crypto";
 import { realpathSync } from "fs";
 import { glob } from "fs/promises";
 import { parseFrontmatterAndLinks } from "./parse.js";
@@ -46,11 +47,17 @@ export class LocalVault implements VaultBackend {
 
     async writeNote(path: string, content: string): Promise<boolean> {
         const fullPath = await this.safePath(path);
+        // Write to a temp file in the same folder, then rename: a sync tool
+        // (Syncthing) never sees a half-written note. The ".~mcp-" prefix is a
+        // dot file, so listings skip it; add it to .stignore as well.
+        const tmpPath = join(dirname(fullPath), `.~mcp-${randomBytes(6).toString("hex")}-${basename(fullPath)}`);
         try {
             await mkdir(dirname(fullPath), { recursive: true });
-            await writeFile(fullPath, content, "utf-8");
+            await writeFile(tmpPath, content, "utf-8");
+            await rename(tmpPath, fullPath);
             return true;
         } catch {
+            await unlink(tmpPath).catch(() => {});
             return false;
         }
     }

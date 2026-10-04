@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased (Paulpanther fork)
+
+### Features
+- `search_notes`: full-text search across note contents with matching lines, regex, case, folder and tag options.
+- Private notes: frontmatter `private: true` (property configurable via `PRIVATE_PROPERTY`) hides a note from every tool, the index, backlinks, search and the conflict tools.
+- Backups: the previous content of a note is copied to `BACKUP_DIR` before every write, delete or move, kept `BACKUP_DAYS` (default 30).
+- Conflict tools (`CONFLICT_TOOLS=true`, filesystem mode): `list_conflicts`, `diff_conflict`, `resolve_conflict` for Syncthing `*.sync-conflict-*` copies, with hash checks, server-side logging and a deduplicated review note.
+- `Dockerfile.source` builds the image from a Git checkout (Dokploy, Coolify).
+
+### Fixes
+- Filesystem writes are atomic (temp file + rename), so sync tools never see a half-written note.
+- The file watcher skips every dot folder (`.stversions`, `.trash`, `.mcp-backups`, ...), not only `.obsidian`.
+- Docker images run as the `node` user (UID/GID 1000) instead of root.
+
 ## 0.7.1
 
 ### Security

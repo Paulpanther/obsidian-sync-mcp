@@ -48,6 +48,8 @@ export class SearchIndex {
     private _since: string = "";
     private persistPath: string | null;
     private passphrase: string | null;
+    /** Content for which this returns true is never indexed (private notes). */
+    excludeContent: ((content: string) => boolean) | null = null;
 
     constructor(persistPath?: string, passphrase?: string) {
         this.persistPath = persistPath ?? null;
@@ -114,6 +116,10 @@ export class SearchIndex {
 
     /** Add or update a note in the index. */
     update(path: string, content: string, mtime?: number): void {
+        if (this.excludeContent?.(content)) {
+            this.remove(path);
+            return;
+        }
         if (this.knownPaths.has(path)) {
             this.clearBacklinks(path);
         }

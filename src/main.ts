@@ -9,6 +9,9 @@ import { SearchIndex } from "./search.js";
 import { applyIndexChange } from "./index-sync.js";
 import { buildAllowedHosts, isHostAllowed, isOriginAllowed } from "./host-guard.js";
 import { readOnlyVault } from "./vault-readonly.js";
+import { privateNotesVault, parsePrivateProperty, isPrivateContent } from "./vault-private.js";
+import { backupVault, parseBackupDays, pruneBackups } from "./vault-backup.js";
+import { registerConflictTools, DEFAULT_CONFLICT_LOG_NOTE, DEFAULT_CONFLICT_REVIEW_NOTE } from "./conflict-tools.js";
 import { registerTools } from "./tools.js";
 import { parseWriteFolders } from "./write-scope.js";
 
@@ -38,6 +41,11 @@ const BASE_URL = process.env.BASE_URL ?? `http://localhost:${PORT}`;
 const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
 const READ_ONLY = process.env.READ_ONLY === "true";
 const WRITE_FOLDERS = parseWriteFolders(process.env.WRITE_FOLDERS);
+const PRIVATE_PROPERTY = parsePrivateProperty(process.env.PRIVATE_PROPERTY);
+const BACKUP_DAYS = parseBackupDays(process.env.BACKUP_DAYS);
+const CONFLICT_TOOLS = process.env.CONFLICT_TOOLS === "true";
+const CONFLICT_LOG_NOTE = process.env.CONFLICT_LOG_NOTE?.trim() || DEFAULT_CONFLICT_LOG_NOTE;
+const CONFLICT_REVIEW_NOTE = process.env.CONFLICT_REVIEW_NOTE?.trim() || DEFAULT_CONFLICT_REVIEW_NOTE;
 
 // Extra instructions appended to the MCP `instructions` string.
 // File wins if both are set (loud warning); missing file is fatal.
@@ -95,18 +103,41 @@ if (VAULT_PATH) {
 await vault.init();
 console.log("Vault ready.");
 
-// READ_ONLY also hides the write tools (see registerTools); wrapping the backend
-// makes any write that bypasses the tools fail too.
-if (READ_ONLY) vault = readOnlyVault(vault);
-
 // --- Per-vault data directory ---
 const baseDataDir = process.env.DATA_DIR ?? join(process.env.HOME ?? process.env.USERPROFILE ?? "/tmp", ".obsidian-mcp");
 const vaultId = createHash("sha256").update(VAULT_NAME).digest("hex").slice(0, 12);
 const dataDir = join(baseDataDir, vaultId);
 
+// The unwrapped backend: conflict tools use it to see private conflict pairs (to skip them) and to write their log notes.
+const rawVault = vault;
+
+// READ_ONLY also hides the write tools (see registerTools); wrapping the backend
+// makes any write that bypasses the tools fail too.
+if (READ_ONLY) {
+    vault = readOnlyVault(vault);
+}
+
+// Backups: copy a note's previous content before every write, delete or move.
+// Filesystem mode keeps them in a dot folder inside the vault (exclude it from sync).
+const BACKUP_DIR = process.env.BACKUP_DIR?.trim() || (VAULT_PATH ? join(VAULT_PATH, ".mcp-backups") : join(dataDir, "backups"));
+if (!READ_ONLY && BACKUP_DAYS > 0) {
+    vault = backupVault(vault, BACKUP_DIR);
+    const prune = () => pruneBackups(BACKUP_DIR, BACKUP_DAYS).catch((err) => console.error("Backup pruning failed:", err));
+    await prune();
+    setInterval(prune, 24 * 60 * 60 * 1000).unref();
+    console.log(`Backups before every write: ${BACKUP_DIR} (kept ${BACKUP_DAYS} days).`);
+}
+
+// Private notes: outermost layer, so a private note is never read, written, listed, indexed or backed up.
+if (PRIVATE_PROPERTY) {
+    vault = privateNotesVault(vault, PRIVATE_PROPERTY);
+    console.log(`Private notes: notes with frontmatter "${PRIVATE_PROPERTY}: true" are hidden from all tools.`);
+}
+
 // --- Search index ---
 const indexPath = join(dataDir, "search-index.json");
 const searchIndex = new SearchIndex(indexPath, COUCHDB_PASSPHRASE);
+if (PRIVATE_PROPERTY) searchIndex.excludeContent = (content) => isPrivateContent(content, PRIVATE_PROPERTY);
 
 // Load persisted metadata from disk
 await searchIndex.loadFromDisk();
@@ -193,7 +224,8 @@ if (VAULT_PATH) {
     fsWatcher = watch(VAULT_PATH, { recursive: true }, (event, filename) => {
         if (!filename || !filename.endsWith(".md")) return;
         const notePath = filename.replace(/\\/g, "/");
-        if (notePath.startsWith(".obsidian/") || notePath.includes("/.obsidian/")) return;
+        // Skip dot folders and dot files (.obsidian, .stversions, .trash, .mcp-backups, temp files), like the listing does.
+        if (notePath.split("/").some((segment) => segment.startsWith("."))) return;
 
         // Debounce: coalesce rapid events for the same file (Obsidian fires 2-3 per save)
         if (pending.has(notePath)) clearTimeout(pending.get(notePath)!);
@@ -228,7 +260,7 @@ if (VAULT_PATH) {
 }
 
 // --- MCP Server ---
-const BASE_INSTRUCTIONS = "Access and manage an Obsidian vault. You can read, write, list, search, move, and delete markdown notes. Every tool response includes an Obsidian deep link. Always show this link to the user using the format [obsidian://open?vault=...&file=...](obsidian://open?vault=...&file=...) so it is both clickable and visible as a URL.";
+const BASE_INSTRUCTIONS = "Access and manage an Obsidian vault. You can read, write, list, full-text search (search_notes), move, and delete markdown notes. Every tool response includes an Obsidian deep link. Always show this link to the user using the format [obsidian://open?vault=...&file=...](obsidian://open?vault=...&file=...) so it is both clickable and visible as a URL.";
 const serverOptions: ConstructorParameters<typeof FastMCP>[0] = {
     name: "obsidian-sync-mcp",
     version: process.env.npm_package_version ?? "0.0.0",
@@ -294,6 +326,24 @@ if (AUTH_TOKEN) {
 
 // --- Tools ---
 registerTools(server, vault, searchIndex, VAULT_NAME, READ_ONLY, WRITE_FOLDERS);
+if (CONFLICT_TOOLS) {
+    if (!VAULT_PATH) {
+        console.warn("CONFLICT_TOOLS is only supported in filesystem mode (VAULT_PATH); ignoring.");
+    } else {
+        registerConflictTools(server, {
+            vault,
+            rawVault,
+            vaultRoot: VAULT_PATH,
+            vaultName: VAULT_NAME,
+            searchIndex,
+            readOnly: READ_ONLY,
+            privateProperty: PRIVATE_PROPERTY,
+            logNote: CONFLICT_LOG_NOTE,
+            reviewNote: CONFLICT_REVIEW_NOTE,
+        });
+        console.log(`Conflict tools enabled (log: ${CONFLICT_LOG_NOTE}, review: ${CONFLICT_REVIEW_NOTE}).`);
+    }
+}
 
 // --- Graceful shutdown ---
 async function shutdown() {
