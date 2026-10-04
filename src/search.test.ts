@@ -183,3 +183,18 @@ describe("SearchIndex persistence", () => {
         assert.equal(await idx.loadFromDisk(), false);
     });
 });
+
+describe("SearchIndex excludeContent", () => {
+    it("never indexes excluded content and drops a note that becomes excluded", () => {
+        const index = new SearchIndex();
+        index.excludeContent = (c) => c.includes("private: true");
+        index.update("a.md", "#tag [[b]]", 1);
+        index.update("s.md", "---\nprivate: true\n---\n#secret [[b]]", 1);
+        assert.deepEqual(index.listPaths(), ["a.md"]);
+        assert.deepEqual(index.getBacklinks("b.md"), ["a.md"]);
+        index.update("a.md", "---\nprivate: true\n---\n", 2);
+        assert.deepEqual(index.listPaths(), []);
+        assert.deepEqual(index.listAllTags(), []);
+        assert.deepEqual(index.getBacklinks("b.md"), []);
+    });
+});

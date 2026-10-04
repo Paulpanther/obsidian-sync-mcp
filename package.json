@@ -34,7 +34,7 @@
         "start": "node dist/main.js",
         "dev": "tsx src/main.ts",
         "test": "node --import tsx --test 'src/**/*.test.ts'",
-        "test:e2e": "node --import tsx --test test/e2e.test.ts",
+        "test:e2e": "node --import tsx --test test/e2e.test.ts test/features.e2e.test.ts",
         "test:couchdb": "tsup test/couchdb-obfuscation.e2e.ts --out-dir .harness-tmp && node .harness-tmp/couchdb-obfuscation.e2e.js"
     },
     "dependencies": {
