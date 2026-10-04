@@ -11,6 +11,7 @@ import { isPathProbablyObfuscated, decrypt } from "octagonal-wheels/encryption/e
 import { clearHandlers } from "../lib/livesync-commonlib/src/replication/SyncParamsHandler.ts";
 import { parseFrontmatterAndLinks } from "./parse.js";
 import type { VaultBackend, NoteInfo, NoteListing } from "./vault-backend.js";
+import { validateNotePath, isValidNotePath } from "./note-path.js";
 import { deriveContent } from "./index-sync.js";
 import { classifyIds, type IdFormat } from "./id-format.js";
 
@@ -125,12 +126,12 @@ export class Vault implements VaultBackend {
     }
 
     private static mdFilter(meta: any): boolean {
-        return (meta.path ?? "").endsWith(".md");
+        return isValidNotePath(meta.path ?? "");
     }
 
     private static docToChange(doc: any, callback: (path: string, content: string | null, mtime?: number, seq?: string | number) => void, seq?: string | number) {
         const path = doc.path ?? "";
-        if (!path.endsWith(".md")) return;
+        if (!isValidNotePath(path)) return;
         // null => deleted (remove); "" => existing empty note (index it, don't drop)
         const content = deriveContent(doc);
         callback(path, content, content === null ? undefined : doc.mtime, seq);
@@ -167,7 +168,7 @@ export class Vault implements VaultBackend {
                 if (isPathProbablyObfuscated(path) && this.passphrase) {
                     try { path = await decrypt(path, this.passphrase, false); } catch { continue; }
                 }
-                if (!path.endsWith(".md") && !meta.deleted) continue;
+                if (!isValidNotePath(path) && !meta.deleted) continue;
                 const doc = await this.manipulator.getByMeta(meta).catch(() => null);
                 if (doc) Vault.docToChange(doc, callback);
             }
@@ -200,9 +201,7 @@ export class Vault implements VaultBackend {
     }
 
     private validatePath(path: string): void {
-        if (!path || path.startsWith("/") || path.includes("\0") || path.includes("..") || path.length > 1000) {
-            throw new Error("Invalid path");
-        }
+        validateNotePath(path);
     }
 
     async readNote(path: string): Promise<string | null> {
@@ -278,7 +277,7 @@ export class Vault implements VaultBackend {
             const entry = doc as MetaEntry;
             if (entry.deleted) continue;
             const notePath = entry.path ?? "";
-            if (!notePath.endsWith(".md")) continue;
+            if (!isValidNotePath(notePath)) continue;
             if (folder && !notePath.startsWith(folder)) continue;
             results.push({ path: notePath, mtime: entry.mtime ?? 0 });
         }

@@ -10,6 +10,7 @@ import { readFile, writeFile, mkdir, chmod } from "fs/promises";
 import { dirname } from "path";
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "crypto";
 import { parseFrontmatterAndLinks } from "./parse.js";
+import { isValidNotePath } from "./note-path.js";
 
 
 function encrypt(text: string, passphrase: string): string {
@@ -169,7 +170,7 @@ export class SearchIndex {
     listWithMtime(folder?: string): Array<{ path: string; mtime: number }> {
         const prefix = folder && !folder.endsWith("/") ? folder + "/" : folder;
         const entries = [...this.knownPaths]
-            .filter((p) => p.endsWith(".md"))
+            .filter(isValidNotePath)
             .filter((p) => !prefix || p.startsWith(prefix))
             .map((p) => ({ path: p, mtime: this.mtimes.get(p) ?? 0 }));
         return entries.sort((a, b) => a.path.localeCompare(b.path));
