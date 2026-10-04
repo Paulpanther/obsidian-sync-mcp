@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.3
+
+### Security
+- **Note tools are now restricted to real vault note paths (GHSA-hfcr-mrh3-c584).** Write, move, and delete accepted any path, so a prompt-injected agent could overwrite LiveSync control files (e.g. `redflag.md`, `flag_rebuild.md`) and trigger a vault-wide rebuild or fetch, or escape the vault via `..`, dot-folders (`.obsidian`), absolute paths, or symlinks. All note operations in both the CouchDB and local-filesystem backends now go through a shared validator that requires a vault-relative `.md` path and rejects traversal, hidden folders, and the reserved control files; listings apply the same filter so what you can see matches what you can touch. Reported by @bruno-b-martins.
+- **The OAuth consent page now shows the redirect destination (GHSA-49hr-4pv9-75q6).** The password approval page never displayed where the authorization code would be sent, so a victim could be phished into approving a malicious client and handing an attacker a code redeemable for full vault access. The page now shows the destination host and the self-reported client name, with a warning to only enter the password for a recognized destination. Reported by @bruno-b-martins.
+
+### Fixes
+- The server never creates the CouchDB database and fails fast with a clear message if it is missing, empty, or unreachable, instead of silently connecting to a database PouchDB would have created (#39). Contributed by @bruno-b-martins.
+
+### Deploy
+- The `docker-compose` stack now creates the database before the MCP server starts via a one-shot `db-init` service, so a first run still works now that the server no longer auto-creates it.
+
 ## 0.7.2
 
 ### Security
