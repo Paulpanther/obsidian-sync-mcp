@@ -227,6 +227,14 @@ describe("/oauth/authorize", () => {
         assert.ok(fields.code);
         assert.ok(fields.csrf);
     });
+
+    it("shows the redirect host on the consent page (phishing defense, GHSA-49hr-4pv9-75q6)", async () => {
+        const { app } = setup();
+        const pkce = generatePKCE();
+        const client = await registerClient(app, "https://evil.example/cb");
+        const { html } = await getAuthorizePage(app, client.client_id, pkce.challenge, "https://evil.example/cb");
+        assert.ok(html.includes("evil.example"), "consent page must display the redirect host");
+    });
 });
 
 describe("/oauth/approve — password validation", () => {
