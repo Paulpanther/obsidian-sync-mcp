@@ -29,6 +29,8 @@ The server implements a self-contained OAuth 2.1 authorization server with PKCE.
 - **Timing-safe comparison** — both password and CSRF token comparisons use `crypto.timingSafeEqual` to prevent timing side-channel attacks.
 - **CSRF protection** — the OAuth approval form includes a per-request CSRF token. Submissions without a valid token are rejected.
 - **Redirect URI validation** — the `/oauth/authorize` endpoint validates that the `redirect_uri` matches what the client registered, preventing authorization code theft via open redirect.
+- **Redirect host allowlist (optional)** — with `MCP_ALLOWED_REDIRECT_HOSTS` set, client registration and `/oauth/authorize` refuse any redirect URI whose host is not listed. Without it, anyone can register a client that redirects to their own server and phish the operator into approving it; the password page shows the destination host as the fallback defense.
+- **Static bearer token (optional)** — `MCP_AUTH_TOKEN` is accepted as a bearer token on `/mcp` for non-OAuth clients. That path has no rate limit, so on an internet-facing server with only OAuth clients set `MCP_STATIC_BEARER=false`; the password is then only checked on the rate-limited sign-in page.
 - **Token persistence** — OAuth clients and tokens are persisted to disk whenever they change (registration, code exchange, refresh), on clean shutdown and every 5 minutes, and loaded on restart, so sessions survive server restarts and deploys. Files are stored in `DATA_DIR/<vault-hash>/` with `0600` permissions (owner-only). Defaults to `~/.obsidian-mcp/` locally, or the persistent volume on Fly.io. Each vault gets an isolated subdirectory.
 
 ---

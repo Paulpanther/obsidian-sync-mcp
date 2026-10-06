@@ -73,7 +73,50 @@ export interface AuthHandle {
     cleanup: () => void;
 }
 
-export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, persistPath?: string): AuthHandle {
+export interface PasswordAuthOptions {
+    /**
+     * Hostnames an OAuth client may redirect to after approval (MCP_ALLOWED_REDIRECT_HOSTS).
+     * Dynamic client registration accepts any redirect URI by default, so anyone can
+     * register a client pointing at their own server and send the operator a sign-in
+     * link; the only defense is the operator noticing the host on the password page.
+     * With an allowlist, such a client is refused at registration and at /oauth/authorize.
+     * `null` keeps the default (any http/https redirect URI).
+     */
+    allowedRedirectHosts?: Set<string> | null;
+}
+
+/** Parse MCP_ALLOWED_REDIRECT_HOSTS (comma-separated hostnames) into a set, or null when unset or empty. */
+export function parseAllowedRedirectHosts(raw: string | undefined): Set<string> | null {
+    if (raw === undefined) return null;
+    const hosts = raw
+        .split(",")
+        .map((h) => h.trim().toLowerCase().replace(/^\[|\]$/g, ""))
+        .filter(Boolean);
+    return hosts.length > 0 ? new Set(hosts) : null;
+}
+
+/**
+ * True when `uri` is an http(s) URL whose hostname is in `allowed`. A null
+ * allowlist accepts every URI (the registration filter still rejects
+ * javascript:, data: and file: URIs). Matching is on the exact hostname, so
+ * `claude.ai` does not cover `evil.claude.ai.attacker.example`, and a
+ * userinfo trick like `https://claude.ai@evil.example/` resolves to its real
+ * host `evil.example`.
+ */
+export function isRedirectHostAllowed(uri: string, allowed: Set<string> | null): boolean {
+    if (allowed === null) return true;
+    let url: URL;
+    try {
+        url = new URL(uri);
+    } catch {
+        return false;
+    }
+    if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+    return allowed.has(url.hostname.replace(/^\[|\]$/g, "").toLowerCase());
+}
+
+export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, persistPath?: string, options: PasswordAuthOptions = {}): AuthHandle {
+    const allowedRedirectHosts = options.allowedRedirectHosts ?? null;
     const pendingAuths = new Map<string, PendingAuth>();
     const csrfTokens = new Map<string, string>(); // code -> csrf token
     const tokens = new Map<string, TokenRecord>();
@@ -181,6 +224,11 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
         if (redirectUris.some((u: any) => !safeUri(u))) {
             return c.json({ error: "invalid_client_metadata", error_description: "invalid redirect_uri" }, 400);
         }
+        const disallowed = redirectUris.filter((u: string) => !isRedirectHostAllowed(u, allowedRedirectHosts));
+        if (disallowed.length > 0) {
+            console.warn(`Auth: /oauth/register refused redirect_uris outside MCP_ALLOWED_REDIRECT_HOSTS: ${JSON.stringify(disallowed)}`);
+            return c.json({ error: "invalid_redirect_uri", error_description: "redirect_uri host is not allowed on this server" }, 400);
+        }
 
         const clientId = randomUUID();
         // Honor the client's requested auth method (RFC 7591 §2). Only
@@ -237,6 +285,13 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
                 `Auth: /oauth/authorize redirect_uri mismatch. received=${JSON.stringify(redirectUri)} ` +
                 `registered=${JSON.stringify(client.redirectUris)}`
             );
+            return c.text("Invalid redirect URI", 400);
+        }
+        // Re-check the host here too: a client registered before the allowlist
+        // was configured is still on disk, and the password page must never be
+        // shown for a destination the operator has excluded.
+        if (!isRedirectHostAllowed(redirectUri, allowedRedirectHosts)) {
+            console.warn(`Auth: /oauth/authorize refused redirect_uri outside MCP_ALLOWED_REDIRECT_HOSTS: ${JSON.stringify(redirectUri)}`);
             return c.text("Invalid redirect URI", 400);
         }
 
@@ -386,6 +441,10 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
 
             // Verify PKCE
             if (pending.codeChallengeMethod === "S256") {
+                if (typeof codeVerifier !== "string" || codeVerifier.length === 0) {
+                    console.warn("Auth: /oauth/token missing code_verifier");
+                    return c.json({ error: "invalid_grant", error_description: "code_verifier is required" }, 400);
+                }
                 const expected = createHash("sha256")
                     .update(codeVerifier)
                     .digest("base64url");
