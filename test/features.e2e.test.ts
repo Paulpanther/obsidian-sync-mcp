@@ -238,16 +238,16 @@ describe("E2E: conflict tools", () => {
 });
 
 describe("E2E: conflict tools on binary files", () => {
-    it("refuses to rewrite a non-text original", async () => {
+    it("lists non-note conflict copies for manual resolution and never touches them", async () => {
         const copy = "img.sync-conflict-20261003-121212-ABCDEFG.png";
         await writeFile(join(vaultDir, "img.png"), "PNG-A");
         await writeFile(join(vaultDir, copy), "PNG-B");
         const list = await callTool("list_conflicts", {});
-        const block = list.split("\n- ").find((b) => b.startsWith(copy))!;
-        const oh = block.match(/original img\.png \(\d+ chars, hash ([0-9a-f]{16})\)/)![1];
-        const ch = block.match(/conflict copy: \d+ chars, hash ([0-9a-f]{16})/)![1];
-        const text = await callTool("resolve_conflict", { conflict_path: copy, action: "keep_conflict", expected_original_hash: oh, expected_conflict_hash: ch, reason: "test" });
-        assert.match(text, /^Refused: img\.png is not a text note/);
+        assert.match(list, /1 conflict\(s\) on non-note files must be resolved by hand: img\.sync-conflict-20261003-121212-ABCDEFG\.png\./);
+        assert.match(await callTool("diff_conflict", { conflict_path: copy }), /^Refused: img\.sync-conflict-.*\.png is not a markdown note/);
+        const text = await callTool("resolve_conflict", { conflict_path: copy, action: "keep_original", expected_original_hash: "x", expected_conflict_hash: "y", reason: "test" });
+        assert.match(text, /^Refused: img\.sync-conflict-.*\.png is not a markdown note/);
         assert.equal(await readFile(join(vaultDir, "img.png"), "utf-8"), "PNG-A");
+        assert.equal(await readFile(join(vaultDir, copy), "utf-8"), "PNG-B");
     });
 });
