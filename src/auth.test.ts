@@ -2,13 +2,16 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { Hono } from "hono";
 import { createHash, randomBytes } from "crypto";
-import { mountPasswordAuth, safeEqual } from "./auth.js";
+import { mkdtemp } from "fs/promises";
+import { tmpdir } from "os";
+import { join } from "path";
+import { isRedirectHostAllowed, mountPasswordAuth, parseAllowedRedirectHosts, safeEqual, type PasswordAuthOptions } from "./auth.js";
 
-function setup(password = "test-password") {
+function setup(password = "test-password", persistPath?: string, options?: PasswordAuthOptions) {
     const app = new Hono();
     const baseUrl = "https://example.com";
-    const auth = mountPasswordAuth(app, baseUrl, password);
-    return { app, baseUrl, validateToken: auth.validateToken };
+    const auth = mountPasswordAuth(app, baseUrl, password, persistPath, options);
+    return { app, baseUrl, auth, validateToken: auth.validateToken };
 }
 
 function generatePKCE() {
@@ -344,7 +347,106 @@ describe("/oauth/approve — rate limiting", () => {
     });
 });
 
+describe("Redirect host allowlist (MCP_ALLOWED_REDIRECT_HOSTS)", () => {
+    const allowed = new Set(["claude.ai", "localhost"]);
+
+    it("parses the env var into lowercased hostnames, null when unset or empty", () => {
+        assert.equal(parseAllowedRedirectHosts(undefined), null);
+        assert.equal(parseAllowedRedirectHosts(""), null);
+        assert.equal(parseAllowedRedirectHosts(" , "), null);
+        assert.deepEqual([...parseAllowedRedirectHosts(" Claude.ai, localhost ,[::1]")!], ["claude.ai", "localhost", "::1"]);
+    });
+
+    it("matches the exact hostname only, over http(s)", () => {
+        assert.equal(isRedirectHostAllowed("https://claude.ai/api/mcp/auth_callback", allowed), true);
+        assert.equal(isRedirectHostAllowed("http://localhost:54321/callback", allowed), true);
+        assert.equal(isRedirectHostAllowed("https://CLAUDE.AI/cb", allowed), true);
+        assert.equal(isRedirectHostAllowed("https://evil.example/cb", allowed), false);
+        assert.equal(isRedirectHostAllowed("https://claude.ai.evil.example/cb", allowed), false);
+        assert.equal(isRedirectHostAllowed("https://claude.ai@evil.example/cb", allowed), false);
+        assert.equal(isRedirectHostAllowed("ftp://claude.ai/cb", allowed), false);
+        assert.equal(isRedirectHostAllowed("not a url", allowed), false);
+        assert.equal(isRedirectHostAllowed("https://anything.example/cb", null), true);
+    });
+
+    it("refuses to register a client whose redirect_uri host is not allowed", async () => {
+        const { app } = setup("test-password", undefined, { allowedRedirectHosts: allowed });
+        const resp = await app.request("/oauth/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ client_name: "evil", redirect_uris: ["https://claude.ai/cb", "https://evil.example/cb"] }),
+        });
+        assert.equal(resp.status, 400);
+        const body = (await resp.json()) as any;
+        assert.equal(body.error, "invalid_redirect_uri");
+    });
+
+    it("still completes the flow for an allowed host", async () => {
+        const { app, validateToken } = setup("test-password", undefined, { allowedRedirectHosts: allowed });
+        const pkce = generatePKCE();
+        const client = await registerClient(app, "https://claude.ai/api/mcp/auth_callback");
+        assert.ok(client.client_id);
+        const { fields } = await getAuthorizePage(app, client.client_id, pkce.challenge, "https://claude.ai/api/mcp/auth_callback");
+        const approveResp = await submitPassword(app, fields.code, fields.csrf, "test-password");
+        assert.equal(approveResp.status, 302);
+        const authCode = new URL(approveResp.headers.get("location")!).searchParams.get("code")!;
+        const tokenResp = await app.request("/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                grant_type: "authorization_code",
+                code: authCode,
+                client_id: client.client_id,
+                code_verifier: pkce.verifier,
+                redirect_uri: "https://claude.ai/api/mcp/auth_callback",
+            }).toString(),
+        });
+        assert.equal(tokenResp.status, 200);
+        const tokens = (await tokenResp.json()) as any;
+        assert.equal(validateToken(`Bearer ${tokens.access_token}`), true);
+    });
+
+    it("refuses /oauth/authorize for a client registered before the allowlist existed", async () => {
+        const dir = await mkdtemp(join(tmpdir(), "auth-test-"));
+        const persistPath = join(dir, "auth-tokens.json");
+        // Registered without an allowlist, persisted to disk...
+        const before = setup("test-password", persistPath);
+        const client = await registerClient(before.app, "https://evil.example/cb");
+        await before.auth.saveTokens();
+        // ...then the server restarts with MCP_ALLOWED_REDIRECT_HOSTS set.
+        const after = setup("test-password", persistPath, { allowedRedirectHosts: allowed });
+        await after.auth.loadTokens();
+        const pkce = generatePKCE();
+        const { resp, html } = await getAuthorizePage(after.app, client.client_id, pkce.challenge, "https://evil.example/cb");
+        assert.equal(resp.status, 400);
+        assert.ok(html.includes("Invalid redirect URI"));
+        assert.ok(!html.includes('name="password"'), "no password page for an excluded destination");
+    });
+});
+
 describe("Token Exchange", () => {
+    it("rejects a missing code_verifier with invalid_grant instead of crashing", async () => {
+        const { app } = setup();
+        const pkce = generatePKCE();
+        const client = await registerClient(app);
+        const { fields } = await getAuthorizePage(app, client.client_id, pkce.challenge);
+        const approveResp = await submitPassword(app, fields.code, fields.csrf, "test-password");
+        const authCode = new URL(approveResp.headers.get("location")!).searchParams.get("code")!;
+        const tokenResp = await app.request("/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                grant_type: "authorization_code",
+                code: authCode,
+                client_id: client.client_id,
+                redirect_uri: "https://app.example.com/callback",
+            }).toString(),
+        });
+        assert.equal(tokenResp.status, 400);
+        const body = (await tokenResp.json()) as any;
+        assert.equal(body.error, "invalid_grant");
+    });
+
     it("issues tokens with correct PKCE", async () => {
         const { app } = setup();
         const tokens = await completeOAuthFlow(app, "test-password");

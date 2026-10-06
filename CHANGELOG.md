@@ -8,8 +8,11 @@
 - Backups: the previous content of a note is copied to `BACKUP_DIR` before every write, delete or move, kept `BACKUP_DAYS` (default 30).
 - Conflict tools (`CONFLICT_TOOLS=true`, filesystem mode): `list_conflicts`, `diff_conflict`, `resolve_conflict` for Syncthing `*.sync-conflict-*` copies, with hash checks, server-side logging and a deduplicated review note.
 - `Dockerfile.source` builds the image from a Git checkout (Dokploy, Coolify).
+- `MCP_ALLOWED_REDIRECT_HOSTS`: optional allowlist of OAuth redirect hosts; client registration and `/oauth/authorize` refuse any other destination, closing the phishing route left open by Dynamic Client Registration.
+- `MCP_STATIC_BEARER=false`: stop accepting `MCP_AUTH_TOKEN` as a bearer token on `/mcp`, so the password is only checked on the rate-limited sign-in page.
 
 ### Fixes
+- `/oauth/token` answers a missing `code_verifier` with `invalid_grant` instead of a 500.
 - Filesystem writes are atomic (temp file + rename), so sync tools never see a half-written note.
 - The file watcher skips every dot folder (`.stversions`, `.trash`, `.mcp-backups`, ...), not only `.obsidian`.
 - Docker images run as the `node` user (UID/GID 1000) instead of root.

@@ -4,7 +4,7 @@ import { createHash } from "crypto";
 import { watch, readFileSync, statSync } from "fs";
 import { stat } from "fs/promises";
 import { setGlobalLogFunction, LEVEL_INFO } from "octagonal-wheels/common/logger";
-import { mountPasswordAuth, safeEqual } from "./auth.js";
+import { mountPasswordAuth, parseAllowedRedirectHosts, safeEqual } from "./auth.js";
 import { SearchIndex } from "./search.js";
 import { applyIndexChange } from "./index-sync.js";
 import { buildAllowedHosts, isHostAllowed, isOriginAllowed } from "./host-guard.js";
@@ -41,6 +41,10 @@ const VAULT_NAME = process.env.VAULT_NAME ?? "MyVault";
 const PORT = parseInt(process.env.PORT ?? "8787");
 const BASE_URL = process.env.BASE_URL ?? `http://localhost:${PORT}`;
 const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
+// MCP_STATIC_BEARER=false: MCP_AUTH_TOKEN is only the OAuth sign-in password and
+// is no longer accepted as a bearer token on /mcp (default: accepted, as upstream).
+const STATIC_BEARER = process.env.MCP_STATIC_BEARER !== "false";
+const ALLOWED_REDIRECT_HOSTS = parseAllowedRedirectHosts(process.env.MCP_ALLOWED_REDIRECT_HOSTS);
 const READ_ONLY = process.env.READ_ONLY === "true";
 const WRITE_FOLDERS = parseWriteFolders(process.env.WRITE_FOLDERS);
 const PRIVATE_PROPERTY = parsePrivateProperty(process.env.PRIVATE_PROPERTY);
@@ -281,9 +285,11 @@ let auth: AuthHandle | null = null;
 if (AUTH_TOKEN) {
     serverOptions.authenticate = async (req: import("http").IncomingMessage) => {
         const header = req.headers["authorization"];
-        // Accept static Bearer token (for curl, MCP Inspector, custom agents)
+        // Accept static Bearer token (for curl, MCP Inspector, custom agents),
+        // unless MCP_STATIC_BEARER=false: then the password only works on the
+        // rate-limited sign-in page, never as a credential on /mcp itself.
         const expected = `Bearer ${AUTH_TOKEN}`;
-        if (header && safeEqual(header, expected)) {
+        if (STATIC_BEARER && header && safeEqual(header, expected)) {
             return { authenticated: true };
         }
         // Accept OAuth-issued tokens (for Claude Web/Desktop/Mobile)
@@ -297,7 +303,10 @@ if (AUTH_TOKEN) {
             headers: { "WWW-Authenticate": `Bearer resource_metadata="${BASE_URL}/.well-known/oauth-protected-resource"` },
         });
     };
-    console.log("Auth enabled (password-gated OAuth).");
+    console.log(
+        `Auth enabled (password-gated OAuth${STATIC_BEARER ? "; MCP_AUTH_TOKEN also accepted as a static bearer token" : "; static bearer token disabled"}` +
+        `${ALLOWED_REDIRECT_HOSTS ? `; redirects only to ${[...ALLOWED_REDIRECT_HOSTS].join(", ")}` : "; redirects to any host (set MCP_ALLOWED_REDIRECT_HOSTS to restrict)"}).`,
+    );
 } else {
     // No token: enforce a Host-header allowlist so the "local only" precondition
     // actually holds. Without this, DNS rebinding lets any website the operator
@@ -327,7 +336,7 @@ const server = new FastMCP(serverOptions);
 
 if (AUTH_TOKEN) {
     const tokenPath = join(dataDir, "auth-tokens.json");
-    auth = mountPasswordAuth(server.getApp(), BASE_URL, AUTH_TOKEN, tokenPath);
+    auth = mountPasswordAuth(server.getApp(), BASE_URL, AUTH_TOKEN, tokenPath, { allowedRedirectHosts: ALLOWED_REDIRECT_HOSTS });
     await auth.loadTokens();
 }
 
