@@ -35,6 +35,15 @@ describe("SearchIndex", () => {
         assert.equal(notes[0].mtime, 1234567890);
     });
 
+    it("excludes non-note paths from listings (GHSA-hfcr-mrh3-c584 defense-in-depth)", () => {
+        const idx = new SearchIndex();
+        idx.update("good.md", "x", 1);
+        idx.update(".obsidian/plugins/x.md", "x", 2);
+        idx.update("redflag2.md", "x", 3);
+        idx.update("ix:internal.md", "x", 4);
+        assert.deepEqual(idx.listWithMtime().map((n) => n.path), ["good.md"]);
+    });
+
     it("extracts and retrieves tags from content", () => {
         const idx = new SearchIndex();
         idx.update("tagged.md", "---\ntags: [project, urgent]\n---\n\nSome #inline content", 100);

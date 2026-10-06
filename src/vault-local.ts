@@ -4,6 +4,7 @@ import { randomBytes } from "crypto";
 import { realpathSync } from "fs";
 import { glob } from "fs/promises";
 import { parseFrontmatterAndLinks } from "./parse.js";
+import { validateNotePath, isValidNotePath } from "./note-path.js";
 import type { VaultBackend, NoteInfo, NoteListing } from "./vault-backend.js";
 
 export class LocalVault implements VaultBackend {
@@ -13,7 +14,10 @@ export class LocalVault implements VaultBackend {
         this.root = realpathSync(resolve(vaultPath));
     }
 
-    private async safePath(path: string): Promise<string> {
+    private async safePath(path: string, isNote = false): Promise<string> {
+        // Note operations must target a real note (.md, no dot-folders, etc.);
+        // folder listing passes a directory and skips this.
+        if (isNote) validateNotePath(path);
         const full = resolve(this.root, path);
         // Lexical check first (catches ../ without hitting disk)
         if (!full.startsWith(this.root + sep)) {
@@ -27,8 +31,29 @@ export class LocalVault implements VaultBackend {
             }
             return real;
         } catch (e: any) {
-            if (e.code === "ENOENT") return full; // file doesn't exist yet (write)
-            throw e;
+            if (e.code !== "ENOENT") throw e;
+            // The file (or a parent) doesn't exist yet. Confirm the nearest
+            // existing ancestor still resolves inside the vault, so a symlinked
+            // parent directory can't redirect a write outside the root.
+            if (!(await this.realpathWithinRoot(dirname(full)))) {
+                throw new Error("Path traversal blocked");
+            }
+            return full;
+        }
+    }
+
+    private async realpathWithinRoot(target: string): Promise<boolean> {
+        let current = target;
+        for (;;) {
+            try {
+                const real = await realpath(current);
+                return real === this.root || real.startsWith(this.root + sep);
+            } catch (e: any) {
+                if (e.code !== "ENOENT") throw e;
+                const parent = dirname(current);
+                if (parent === current) return false; // reached filesystem root
+                current = parent;
+            }
         }
     }
 
@@ -37,7 +62,7 @@ export class LocalVault implements VaultBackend {
     async close(): Promise<void> {}
 
     async readNote(path: string): Promise<string | null> {
-        const fullPath = await this.safePath(path);
+        const fullPath = await this.safePath(path, true);
         try {
             return await readFile(fullPath, "utf-8");
         } catch {
@@ -46,7 +71,7 @@ export class LocalVault implements VaultBackend {
     }
 
     async writeNote(path: string, content: string): Promise<boolean> {
-        const fullPath = await this.safePath(path);
+        const fullPath = await this.safePath(path, true);
         // Write to a temp file in the same folder, then rename: a sync tool
         // (Syncthing) never sees a half-written note. The ".~mcp-" prefix is a
         // dot file, so listings skip it; add it to .stignore as well.
@@ -63,7 +88,7 @@ export class LocalVault implements VaultBackend {
     }
 
     async deleteNote(path: string): Promise<boolean> {
-        const fullPath = await this.safePath(path);
+        const fullPath = await this.safePath(path, true);
         try {
             await unlink(fullPath);
             return true;
@@ -73,8 +98,8 @@ export class LocalVault implements VaultBackend {
     }
 
     async moveNote(from: string, to: string): Promise<boolean> {
-        const fromPath = await this.safePath(from);
-        const toPath = await this.safePath(to);
+        const fromPath = await this.safePath(from, true);
+        const toPath = await this.safePath(to, true);
         try {
             await mkdir(dirname(toPath), { recursive: true });
             await rename(fromPath, toPath);
@@ -93,7 +118,7 @@ export class LocalVault implements VaultBackend {
     }
 
     async getMetadata(path: string): Promise<NoteInfo | null> {
-        const fullPath = await this.safePath(path);
+        const fullPath = await this.safePath(path, true);
         try {
             const [content, s] = await Promise.all([
                 readFile(fullPath, "utf-8"),
@@ -123,7 +148,7 @@ export class LocalVault implements VaultBackend {
         try {
             for await (const entry of glob("**/*.md", { cwd: searchDir })) {
                 const full = folder ? `${folder}${entry}` : entry;
-                if (full.startsWith(".obsidian/") || full.includes("/.obsidian/")) continue;
+                if (!isValidNotePath(full)) continue;
                 entries.push(full);
             }
         } catch {

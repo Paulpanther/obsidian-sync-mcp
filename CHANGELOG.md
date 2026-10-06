@@ -14,6 +14,33 @@
 - The file watcher skips every dot folder (`.stversions`, `.trash`, `.mcp-backups`, ...), not only `.obsidian`.
 - Docker images run as the `node` user (UID/GID 1000) instead of root.
 
+## 0.7.3
+
+### Security
+- **Note tools are now restricted to real vault note paths (GHSA-hfcr-mrh3-c584).** Write, move, and delete accepted any path, so a prompt-injected agent could overwrite LiveSync control files (e.g. `redflag.md`, `flag_rebuild.md`) and trigger a vault-wide rebuild or fetch, or escape the vault via `..`, dot-folders (`.obsidian`), absolute paths, or symlinks. All note operations in both the CouchDB and local-filesystem backends now go through a shared validator that requires a vault-relative `.md` path and rejects traversal, hidden folders, and the reserved control files; listings apply the same filter so what you can see matches what you can touch. Reported by @bruno-b-martins.
+- **The OAuth consent page now shows the redirect destination (GHSA-49hr-4pv9-75q6).** The password approval page never displayed where the authorization code would be sent, so a victim could be phished into approving a malicious client and handing an attacker a code redeemable for full vault access. The page now shows the destination host and the self-reported client name, with a warning to only enter the password for a recognized destination. Reported by @bruno-b-martins.
+
+### Fixes
+- The server never creates the CouchDB database and fails fast with a clear message if it is missing, empty, or unreachable, instead of silently connecting to a database PouchDB would have created (#39). Contributed by @bruno-b-martins.
+
+### Deploy
+- The `docker-compose` stack now creates the database before the MCP server starts via a one-shot `db-init` service, so a first run still works now that the server no longer auto-creates it.
+
+## 0.7.2
+
+### Security
+- Credentials embedded in `COUCHDB_URL` are now redacted from all logs, at every level — including the raw `Error` objects the sync library logs — so `user:pass@host` no longer leaks into container logs (#37). Contributed by @bruno-b-martins.
+
+### Fixes
+- The static token and the OAuth password/CSRF comparisons hash both sides before the constant-time check, so a non-ASCII `Authorization` header or a missing password field now returns a clean 401 instead of throwing (previously a malformed 401 without `WWW-Authenticate`, or a 500) (#36). Contributed by @bruno-b-martins.
+- `READ_ONLY` is now enforced in the vault backend as well as by hiding the write tools, so a write can't slip through a code path that bypasses the tools (#38). Contributed by @bruno-b-martins.
+
+### CI
+- Workflows run with least-privilege permissions (read-only by default; publish jobs request only what they need), every action is pinned to a commit SHA, oxlint is pinned to a fixed version, and the published image gets a build-provenance attestation; a Dependabot config keeps the pins current (#42). Contributed by @bruno-b-martins.
+
+### Docs
+- `SECURITY.md` corrected to match the code: accurate token-persistence timing and CORS origins, and the metadata-index description now reflects reality (the stale FlexSearch and 50-match-cap text is gone) (#43). Contributed by @bruno-b-martins.
+
 ## 0.7.1
 
 ### Security

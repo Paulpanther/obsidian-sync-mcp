@@ -21,19 +21,19 @@ after(async () => {
 
 describe("safePath — path traversal prevention", () => {
     it("blocks ../ traversal", async () => {
-        await assert.rejects(() => vault.readNote("../etc/passwd"), /Path traversal blocked/);
+        await assert.rejects(() => vault.readNote("../etc/passwd"), /Invalid note path/);
     });
 
     it("blocks ../../ traversal", async () => {
-        await assert.rejects(() => vault.readNote("../../etc/shadow"), /Path traversal blocked/);
+        await assert.rejects(() => vault.readNote("../../etc/shadow"), /Invalid note path/);
     });
 
     it("blocks write with traversal", async () => {
-        await assert.rejects(() => vault.writeNote("../evil.md", "pwned"), /Path traversal blocked/);
+        await assert.rejects(() => vault.writeNote("../evil.md", "pwned"), /Invalid note path/);
     });
 
     it("blocks delete with traversal", async () => {
-        await assert.rejects(() => vault.deleteNote("../../important.md"), /Path traversal blocked/);
+        await assert.rejects(() => vault.deleteNote("../../important.md"), /Invalid note path/);
     });
 
     it("blocks listNotes with traversal", async () => {
@@ -43,6 +43,36 @@ describe("safePath — path traversal prevention", () => {
     it("allows nested paths within vault", async () => {
         await vault.writeNote("sub/dir/note.md", "ok");
         assert.equal(await vault.readNote("sub/dir/note.md"), "ok");
+    });
+});
+
+describe("note-path enforcement (GHSA-hfcr-mrh3-c584)", () => {
+    it("rejects writing executable code into .obsidian", async () => {
+        await assert.rejects(() => vault.writeNote(".obsidian/plugins/evil/main.js", "pwned"), /Invalid note path/);
+    });
+
+    it("rejects reading LiveSync credentials from .obsidian", async () => {
+        await assert.rejects(() => vault.readNote(".obsidian/plugins/obsidian-livesync/data.json"), /Invalid note path/);
+    });
+
+    it("rejects non-.md writes", async () => {
+        await assert.rejects(() => vault.writeNote("notes/data.json", "{}"), /Invalid note path/);
+    });
+
+    it("blocks a write that escapes via a symlinked directory", async () => {
+        const outside = await mkdtemp(join(tmpdir(), "vault-outside-"));
+        try {
+            // A pre-existing symlink inside the vault pointing outside it.
+            const { symlink } = await import("fs/promises");
+            await symlink(outside, join(tmpDir, "link"));
+            // Target file does not exist yet, so the old ENOENT path returned
+            // the lexical path and followed the symlink out of the vault.
+            await assert.rejects(() => vault.writeNote("link/escaped.md", "pwned"), /Path traversal blocked/);
+            await assert.equal(await readFile(join(outside, "escaped.md"), "utf-8").catch(() => null), null);
+        } finally {
+            await unlink(join(tmpDir, "link")).catch(() => {});
+            await rm(outside, { recursive: true, force: true });
+        }
     });
 });
 
