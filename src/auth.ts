@@ -55,6 +55,17 @@ const MAX_CLIENTS = 100;
 const MAX_PENDING = 100;
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
+/**
+ * Constant-time string comparison for secrets. Comparing SHA-256 digests gives
+ * timingSafeEqual equal-length inputs, so it never throws on a length or
+ * encoding mismatch and the secret's length is not revealed.
+ */
+export function safeEqual(a: string, b: string): boolean {
+    const da = createHash("sha256").update(a).digest();
+    const db = createHash("sha256").update(b).digest();
+    return timingSafeEqual(da, db);
+}
+
 export interface AuthHandle {
     validateToken: (auth: string | undefined) => boolean;
     saveTokens: () => Promise<void>;
@@ -256,7 +267,7 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
 
         const csrf = randomBytes(32).toString("hex");
         csrfTokens.set(code, csrf);
-        return c.html(renderPasswordPage(code, csrf));
+        return c.html(renderPasswordPage(code, csrf, hostOf(redirectUri), client.clientName));
     });
 
     // --- Approval handler ---
@@ -274,9 +285,7 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
         }
 
         // Validate CSRF token
-        const csrfA = Buffer.from(submittedCsrf ?? "");
-        const csrfB = Buffer.from(expectedCsrf);
-        if (csrfA.length !== csrfB.length || !timingSafeEqual(csrfA, csrfB)) {
+        if (typeof submittedCsrf !== "string" || !safeEqual(submittedCsrf, expectedCsrf)) {
             return c.html("<p>Invalid request.</p>", 403);
         }
 
@@ -286,12 +295,10 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
             console.warn(`Auth: locked out, ${waitSec}s remaining`);
             const newCsrf = randomBytes(32).toString("hex");
             csrfTokens.set(code, newCsrf);
-            return c.html(renderPasswordPage(code, newCsrf, `Too many attempts. Try again in ${waitSec} seconds.`), 429);
+            return c.html(renderPasswordPage(code, newCsrf, hostOf(pending.redirectUri), clients.get(pending.clientId)?.clientName, `Too many attempts. Try again in ${waitSec} seconds.`), 429);
         }
 
-        const a = Buffer.from(submittedPassword);
-        const b = Buffer.from(password);
-        if (a.length !== b.length || !timingSafeEqual(a, b)) {
+        if (typeof submittedPassword !== "string" || !safeEqual(submittedPassword, password)) {
             failedAttempts++;
             console.warn(`Auth: failed attempt ${failedAttempts} total`);
 
@@ -304,10 +311,10 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
                 const lockoutMs = BASE_LOCKOUT_MS * Math.pow(2, lockoutCount - 1);
                 lockedUntil = Date.now() + lockoutMs;
                 console.warn(`Auth: lockout #${lockoutCount}, ${lockoutMs / 1000}s`);
-                return c.html(renderPasswordPage(code, newCsrf, `Too many attempts. Try again in ${Math.ceil(lockoutMs / 1000)} seconds.`), 429);
+                return c.html(renderPasswordPage(code, newCsrf, hostOf(pending.redirectUri), clients.get(pending.clientId)?.clientName, `Too many attempts. Try again in ${Math.ceil(lockoutMs / 1000)} seconds.`), 429);
             }
 
-            return c.html(renderPasswordPage(code, newCsrf, "Wrong password."), 401);
+            return c.html(renderPasswordPage(code, newCsrf, hostOf(pending.redirectUri), clients.get(pending.clientId)?.clientName, "Wrong password."), 401);
         }
 
         // Password correct — reset everything
@@ -511,7 +518,17 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
     };
 }
 
-function renderPasswordPage(code: string, csrf: string, error?: string): string {
+function hostOf(uri: string): string {
+    try {
+        return new URL(uri).host;
+    } catch {
+        return uri;
+    }
+}
+
+function renderPasswordPage(code: string, csrf: string, redirectHost: string, clientName: string | undefined, error?: string): string {
+    const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    const who = clientName ? `<b>${esc(clientName)}</b> (name self-reported)` : "An application";
     return `<!DOCTYPE html>
 <html><head><title>Obsidian Sync MCP - Authorize</title>
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
@@ -521,10 +538,15 @@ function renderPasswordPage(code: string, csrf: string, error?: string): string 
   input[type=password] { width: 100%; padding: 10px; margin: 10px 0; box-sizing: border-box; font-size: 1em; }
   button { padding: 10px 20px; font-size: 1em; cursor: pointer; }
   .error { color: red; }
+  .dest { background: #f3f3f3; padding: 8px 10px; border-radius: 6px; word-break: break-all; }
+  .warn { color: #a15c00; }
 </style></head>
 <body>
   <h1>Obsidian Sync MCP</h1>
-  ${error ? `<p class="error">${error.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>` : "<p>Enter the server password to authorize access to your vault.</p>"}
+  <p>${who} is requesting access to your vault. After you approve, your browser will be sent to:</p>
+  <p class="dest"><b>${esc(redirectHost)}</b></p>
+  <p class="warn">Only enter your password if you recognize this destination. If you did not start this sign-in, close this page.</p>
+  ${error ? `<p class="error">${esc(error)}</p>` : ""}
   <form method="POST" action="/oauth/approve" autocomplete="on">
     <input type="hidden" name="code" value="${code.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}">
     <input type="hidden" name="csrf" value="${csrf.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}">

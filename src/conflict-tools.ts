@@ -15,6 +15,7 @@ import type { VaultBackend } from "./vault-backend.js";
 import type { SearchIndex } from "./search.js";
 import { contentHash, diffLines, findConflictPaths, formatDiff, parseConflictPath } from "./conflicts.js";
 import { isPrivateContent } from "./vault-private.js";
+import { isValidNotePath } from "./note-path.js";
 
 export interface ConflictToolsOptions {
     /** Full backend chain used for reads and writes of notes. */
@@ -48,10 +49,13 @@ export function registerConflictTools(server: FastMCP, opts: ConflictToolsOption
     async function loadPair(conflictPath: string) {
         const name = parseConflictPath(conflictPath);
         if (!name) return null;
+        // The note tools only touch real .md notes, so attachment conflicts
+        // (images, PDFs, canvases) are listed but never read or changed.
+        if (!isValidNotePath(conflictPath) || !isValidNotePath(name.original)) return { name, unsupported: true as const };
         const conflict = await rawVault.readNote(conflictPath);
         if (conflict === null) return null;
         const original = await rawVault.readNote(name.original);
-        return { name, conflict, original, hidden: isPrivate(conflict) || isPrivate(original) };
+        return { name, unsupported: false as const, conflict, original, hidden: isPrivate(conflict) || isPrivate(original) };
     }
 
     async function appendLine(notePath: string, header: string, line: string) {
@@ -71,10 +75,15 @@ export function registerConflictTools(server: FastMCP, opts: ConflictToolsOption
         execute: async () => {
             const paths = await findConflictPaths(vaultRoot);
             const lines: string[] = [];
+            const byHand: string[] = [];
             let skipped = 0;
             for (const p of paths) {
                 const pair = await loadPair(p);
                 if (!pair) continue;
+                if (pair.unsupported) {
+                    byHand.push(p);
+                    continue;
+                }
                 if (pair.hidden) {
                     skipped++;
                     continue;
@@ -87,7 +96,8 @@ export function registerConflictTools(server: FastMCP, opts: ConflictToolsOption
                     `- ${p}\n  ${orig}\n  conflict copy: ${conflict.length} chars, hash ${contentHash(conflict)}, from device ${name.device}, detected ${name.detected}`,
                 );
             }
-            const skippedNote = skipped > 0 ? ` ${skipped} conflict(s) involving private notes were skipped and must be resolved by hand.` : "";
+            let skippedNote = skipped > 0 ? ` ${skipped} conflict(s) involving private notes were skipped and must be resolved by hand.` : "";
+            if (byHand.length > 0) skippedNote += ` ${byHand.length} conflict(s) on non-note files must be resolved by hand: ${byHand.join(", ")}.`;
             if (lines.length === 0) return `No sync conflicts found.${skippedNote}`;
             return [`${lines.length} sync conflict(s).${skippedNote}`, ...lines].join("\n");
         },
@@ -102,7 +112,9 @@ export function registerConflictTools(server: FastMCP, opts: ConflictToolsOption
         }),
         execute: async ({ conflict_path }) => {
             const pair = await loadPair(conflict_path);
-            if (!pair || pair.hidden) return `Conflict copy not found: ${conflict_path}`;
+            if (!pair) return `Conflict copy not found: ${conflict_path}`;
+            if (pair.unsupported) return `Refused: ${conflict_path} is not a markdown note; resolve it by hand on a device.`;
+            if (pair.hidden) return `Conflict copy not found: ${conflict_path}`;
             const { name, conflict, original } = pair;
             const header = [
                 `Original: ${name.original}${original === null ? " (MISSING)" : ` (hash ${contentHash(original)})`}`,
@@ -132,7 +144,9 @@ export function registerConflictTools(server: FastMCP, opts: ConflictToolsOption
         }),
         execute: async ({ conflict_path, action, merged_content, expected_original_hash, expected_conflict_hash, reason }) => {
             const pair = await loadPair(conflict_path);
-            if (!pair || pair.hidden) return `Conflict copy not found: ${conflict_path}`;
+            if (!pair) return `Conflict copy not found: ${conflict_path}`;
+            if (pair.unsupported) return `Refused: ${conflict_path} is not a markdown note; resolve it by hand on a device.`;
+            if (pair.hidden) return `Conflict copy not found: ${conflict_path}`;
             const { name, conflict, original } = pair;
             const conflictHash = contentHash(conflict);
             const originalHash = original === null ? null : contentHash(original);
@@ -152,11 +166,6 @@ export function registerConflictTools(server: FastMCP, opts: ConflictToolsOption
                 await appendLine(reviewNote, REVIEW_HEADER, `- [ ] ${stamp} ${where}: ${oneLine}`);
                 await appendLine(logNote, LOG_HEADER, `- ${stamp} **escalate** ${where}: ${oneLine}`);
                 return `Escalated: ${conflict_path} added to ${reviewNote}. Nothing was changed.`;
-            }
-
-            // Content is handled as UTF-8 text; rewriting an image or PDF that way would corrupt it.
-            if ((action === "merge" || action === "keep_conflict") && !/\.(md|markdown|txt|canvas|json|csv)$/i.test(name.original)) {
-                return `Refused: ${name.original} is not a text note; only keep_original or escalate are allowed for it.`;
             }
 
             let newOriginal: string | null;

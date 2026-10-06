@@ -1,7 +1,7 @@
 {
     "name": "obsidian-sync-mcp",
     "mcpName": "io.github.es617/obsidian-sync-mcp",
-    "version": "0.7.1",
+    "version": "0.7.3",
     "description": "Give any AI agent access to your Obsidian vault over MCP",
     "type": "module",
     "license": "MIT",
@@ -29,7 +29,7 @@
         "LICENSE"
     ],
     "scripts": {
-        "lint": "npx --yes oxlint@latest --deny-warnings src/",
+        "lint": "npx --yes oxlint@1.86.0 --deny-warnings src/",
         "build": "tsup",
         "start": "node dist/main.js",
         "dev": "tsx src/main.ts",

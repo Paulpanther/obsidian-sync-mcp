@@ -250,7 +250,7 @@ Without `MCP_AUTH_TOKEN`, the server runs without authentication — suitable fo
 | `COUCHDB_URL` | CouchDB mode | — | CouchDB server URL |
 | `COUCHDB_USER` | CouchDB mode | `admin` | CouchDB username |
 | `COUCHDB_PASSWORD` | CouchDB mode | — | CouchDB password (required) |
-| `COUCHDB_DATABASE` | CouchDB mode | `obsidian` | CouchDB database name |
+| `COUCHDB_DATABASE` | CouchDB mode | `obsidian` | CouchDB database name. The server never creates it: if it doesn't exist, startup fails with an error |
 | `COUCHDB_PASSPHRASE` | CouchDB mode | — | LiveSync E2E encryption passphrase (must match plugin setting) |
 | `COUCHDB_OBFUSCATE_PROPERTIES` | CouchDB mode | `false` | Set to `true` if "Obfuscate Properties" is enabled in LiveSync (obfuscates file paths, sizes, dates in the database). For existing vaults the actual setting is auto-detected at startup; this value only decides the format for a brand-new empty database |
 | `VAULT_NAME` | Both | `MyVault` | Vault name (used for deep links and index storage) |
@@ -352,6 +352,8 @@ This server gives an AI agent read/write access to your Obsidian vault.
 **Authentication is optional.** Always set `MCP_AUTH_TOKEN` when exposing to the internet.
 
 **Use HTTPS in production.** Use a tunnel or deploy behind a reverse proxy.
+
+**Don't leave `LOG_LEVEL=debug` on in production.** Debug logging records every tool call's arguments, including note contents, and full error stacks. Credentials embedded in `COUCHDB_URL` are redacted from logs at every level.
 
 This software is provided as-is under the [MIT license](https://github.com/es617/obsidian-sync-mcp/blob/main/LICENSE). You are responsible for what agents do with your vault.
 
